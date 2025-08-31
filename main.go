@@ -29,7 +29,8 @@ func main() {
 		fmt.Println("1. Timer starten")
 		fmt.Println("2. Session manuell hinzufügen")
 		fmt.Println("3. Sessions anzeigen")
-		fmt.Println("4. Beenden")
+		fmt.Println("4. Session löschen")
+		fmt.Println("5. Beenden")
 		fmt.Print("Wähle eine Option: ")
 
 		var choice string
@@ -43,6 +44,8 @@ func main() {
 		case "3":
 			listSessions(db)
 		case "4":
+			deleteSession(db)
+		case "5":
 			fmt.Println("Auf Wiedersehen!")
 			return
 		default:
@@ -57,6 +60,8 @@ func timer(db *sql.DB) {
 		end        time.Time
 		difference time.Duration
 		input      string
+		title      string
+		scanner    = bufio.NewScanner(os.Stdin)
 	)
 
 	fmt.Println("type start to start the timer")
@@ -75,10 +80,9 @@ func timer(db *sql.DB) {
 	}
 
 	fmt.Println("timer stopped")
-	var title string
+
 	for title == "" {
 		fmt.Print("Titel eingeben: ")
-		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		title = strings.TrimSpace(scanner.Text())
 		if title == "" {
@@ -95,7 +99,7 @@ func timer(db *sql.DB) {
 	verdienst := math.Round((stunden*stundenlohn)*100) / 100
 
 	fmt.Print("Beschreibung (optional): ")
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner = bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	description = strings.TrimSpace(scanner.Text())
 
@@ -121,8 +125,6 @@ func createTable(db *sql.DB) {
 	if err != nil {
 		panic(err)
 	}
-
-	fmt.Println("Tabelle erstellt!")
 }
 
 // Diese Funktion speichert eine Session in der Datenbank
@@ -156,7 +158,7 @@ func listSessions(db *sql.DB) {
 			panic(err)
 		}
 
-		fmt.Printf("ID: %d | %s | %s - %s | %s | %f | %.2f\n", id, title, startTime, endTime, difference, stundenlohn, verdienst)
+		fmt.Printf("ID: %d | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n", id, title, startTime, endTime, difference, stundenlohn, verdienst)
 	}
 	fmt.Println("=====================")
 }
@@ -220,4 +222,58 @@ func addSession(db *sql.DB) {
 
 	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference.String(), stundenlohn, verdienst)
 	defer fmt.Printf("Session '%s' gespeichert! Dauer: %v. Verdienst: %.2f€\n", title, difference, verdienst)
+}
+
+func showSessionByID(db *sql.DB, id int) bool {
+	query := `SELECT id, title, description, start_time, end_time, difference, stundenlohn, verdienst FROM work_sessions WHERE id = ?`
+	row := db.QueryRow(query, id)
+
+	var (
+		sID         int
+		title       string
+		description string
+		startTime   string
+		endTime     string
+		difference  string
+		stundenlohn float64
+		verdienst   float64
+	)
+
+	err := row.Scan(&sID, &title, &description, &startTime, &endTime, &difference, &stundenlohn, &verdienst)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			fmt.Printf("Keine Session mit ID %d gefunden.\n", id)
+			return false
+		}
+		panic(err)
+	}
+
+	fmt.Printf("ID: %d | %s | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n", id, title, description, startTime, endTime, difference, stundenlohn, verdienst)
+	return true
+}
+
+func deleteSession(db *sql.DB) {
+	query := `DELETE FROM work_sessions WHERE id = ?`
+	var id int
+	var input string
+
+	fmt.Print("Gib die ID der zu löschenden Session ein: ")
+	fmt.Scanln(&id)
+	fmt.Println("Bist du sicher, dass du die Session mit ID", id, "löschen möchtest?")
+	if !showSessionByID(db, id) {
+		return // Bricht ab und kehrt zu main zurück
+	}
+	fmt.Print("(j/n)")
+	fmt.Scanln(&input)
+
+	if strings.ToLower(input) == "j" {
+		_, err := db.Exec(query, id)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Session mit ID %d gelöscht!\n", id)
+	} else {
+		fmt.Println("Löschen abgebrochen.")
+		return
+	}
 }
