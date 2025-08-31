@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,8 +27,9 @@ func main() {
 	// Einfaches Menü
 	for {
 		fmt.Println("1. Timer starten")
-		fmt.Println("2. Sessions anzeigen")
-		fmt.Println("3. Beenden")
+		fmt.Println("2. Session manuell hinzufügen")
+		fmt.Println("3. Sessions anzeigen")
+		fmt.Println("4. Beenden")
 		fmt.Print("Wähle eine Option: ")
 
 		var choice string
@@ -37,8 +39,10 @@ func main() {
 		case "1":
 			timer(db)
 		case "2":
-			listSessions(db)
+			addSession(db)
 		case "3":
+			listSessions(db)
+		case "4":
 			fmt.Println("Auf Wiedersehen!")
 			return
 		default:
@@ -91,7 +95,9 @@ func timer(db *sql.DB) {
 	verdienst := math.Round((stunden*stundenlohn)*100) / 100
 
 	fmt.Print("Beschreibung (optional): ")
-	fmt.Scanln(&description)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	description = strings.TrimSpace(scanner.Text())
 
 	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference.String(), stundenlohn, verdienst)
 	defer fmt.Printf("Session '%s' gespeichert! Dauer: %v. Verdienst: %.2f€\n", title, difference, verdienst)
@@ -153,4 +159,65 @@ func listSessions(db *sql.DB) {
 		fmt.Printf("ID: %d | %s | %s - %s | %s | %f | %.2f\n", id, title, startTime, endTime, difference, stundenlohn, verdienst)
 	}
 	fmt.Println("=====================")
+}
+
+func addSession(db *sql.DB) {
+	var (
+		start, end  time.Time
+		difference  time.Duration
+		title       string
+		description string
+		stundenlohn float64
+	)
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for title == "" {
+		fmt.Print("Titel eingeben: ")
+		scanner.Scan()
+		title = strings.TrimSpace(scanner.Text())
+		if title == "" {
+			fmt.Println("Titel darf nicht leer sein!")
+		}
+	}
+
+	fmt.Print("Beschreibung (optional): ")
+	scanner.Scan()
+	description = strings.TrimSpace(scanner.Text())
+
+	fmt.Print("Startzeit (YYYY-MM-DD HH:MM:SS): ")
+	scanner.Scan()
+	startStr := strings.TrimSpace(scanner.Text())
+	var err error
+	start, err = time.Parse("2006-01-02 15:04:05", startStr)
+	if err != nil {
+		fmt.Println("Ungültiges Format für Startzeit!")
+		return
+	}
+
+	fmt.Print("Endzeit (YYYY-MM-DD HH:MM:SS): ")
+	scanner.Scan()
+	endStr := strings.TrimSpace(scanner.Text())
+	end, err = time.Parse("2006-01-02 15:04:05", endStr)
+	if err != nil {
+		fmt.Println("Ungültiges Format für Endzeit!")
+		return
+	}
+
+	difference = end.Sub(start).Round(time.Second)
+
+	fmt.Print("Stundenlohn eingeben: ")
+	scanner.Scan()
+	stundenlohnStr := strings.TrimSpace(scanner.Text())
+	stundenlohn, err = strconv.ParseFloat(stundenlohnStr, 64)
+	if err != nil {
+		fmt.Println("Ungültiger Stundenlohn!")
+		return
+	}
+
+	stunden := difference.Hours()
+	verdienst := math.Round((stunden*stundenlohn)*100) / 100
+
+	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference.String(), stundenlohn, verdienst)
+	defer fmt.Printf("Session '%s' gespeichert! Dauer: %v. Verdienst: %.2f€\n", title, difference, verdienst)
 }
