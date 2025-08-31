@@ -29,8 +29,9 @@ func main() {
 		fmt.Println("1. Timer starten")
 		fmt.Println("2. Session manuell hinzufügen")
 		fmt.Println("3. Sessions anzeigen")
-		fmt.Println("4. Session löschen")
-		fmt.Println("5. Beenden")
+		fmt.Println("4. Session bearbeiten")
+		fmt.Println("5. Session löschen")
+		fmt.Println("6. Beenden")
 		fmt.Print("Wähle eine Option: ")
 
 		var choice string
@@ -44,8 +45,10 @@ func main() {
 		case "3":
 			listSessions(db)
 		case "4":
-			deleteSession(db)
+			editSession(db)
 		case "5":
+			deleteSession(db)
+		case "6":
 			fmt.Println("Auf Wiedersehen!")
 			return
 		default:
@@ -260,9 +263,11 @@ func deleteSession(db *sql.DB) {
 	fmt.Print("Gib die ID der zu löschenden Session ein: ")
 	fmt.Scanln(&id)
 	fmt.Println("Bist du sicher, dass du die Session mit ID", id, "löschen möchtest?")
+
 	if !showSessionByID(db, id) {
 		return // Bricht ab und kehrt zu main zurück
 	}
+
 	fmt.Print("(j/n)")
 	fmt.Scanln(&input)
 
@@ -275,5 +280,121 @@ func deleteSession(db *sql.DB) {
 	} else {
 		fmt.Println("Löschen abgebrochen.")
 		return
+	}
+}
+
+func editSession(db *sql.DB) {
+	var query string
+	var id int
+	var choice string
+	var scanner = bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Gib die ID der zu bearbeitenden Session ein: ")
+	fmt.Scanln(&id)
+	if !showSessionByID(db, id) {
+		return // Bricht ab und kehrt zu main zurück
+	}
+	for {
+		fmt.Println("Was möchtest du bearbeiten?")
+		fmt.Println("1. Titel")
+		fmt.Println("2. Beschreibung")
+		fmt.Println("3. Startzeit")
+		fmt.Println("4. Endzeit")
+		fmt.Println("5. Stundenlohn")
+		fmt.Println("6. Beenden")
+		fmt.Print("Wähle eine Option: ")
+
+		fmt.Scanln(&choice)
+
+		switch choice {
+		case "1":
+			title := ""
+			for title == "" {
+				fmt.Print("Neuer Titel: ")
+				scanner.Scan()
+				title = strings.TrimSpace(scanner.Text())
+				if title == "" {
+					fmt.Println("Titel darf nicht leer sein!")
+				}
+			}
+			query = `UPDATE work_sessions SET title = ? WHERE id = ?`
+			_, err := db.Exec(query, title, id)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println("Titel aktualisiert.")
+		case "2":
+			fmt.Print("Neue Beschreibung: ")
+			scanner.Scan()
+			description := strings.TrimSpace(scanner.Text())
+			query = `UPDATE work_sessions SET description = ? WHERE id = ?`
+			_, err := db.Exec(query, description, id)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println("Beschreibung aktualisiert.")
+		case "3":
+			var startTime time.Time
+			for {
+				fmt.Print("Neue Startzeit (YYYY-MM-DD HH:MM:SS): ")
+				scanner.Scan()
+				startStr := strings.TrimSpace(scanner.Text())
+				var err error
+				startTime, err = time.Parse("2006-01-02 15:04:05", startStr)
+				if err != nil {
+					fmt.Println("Ungültiges Format! Bitte erneut eingeben.")
+					continue
+				}
+				query = `UPDATE work_sessions SET start_time = ? WHERE id = ?`
+				_, err = db.Exec(query, startTime.Format("2006-01-02 15:04:05"), id)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println("Startzeit aktualisiert.")
+				break
+			}
+		case "4":
+			var endTime time.Time
+			for {
+				fmt.Print("Neue Endzeit (YYYY-MM-DD HH:MM:SS): ")
+				scanner.Scan()
+				endStr := strings.TrimSpace(scanner.Text())
+				var err error
+				endTime, err = time.Parse("2006-01-02 15:04:05", endStr)
+				if err != nil {
+					fmt.Println("Ungültiges Format! Bitte erneut eingeben.")
+					continue
+				}
+				query = `UPDATE work_sessions SET end_time = ? WHERE id = ?`
+				_, err = db.Exec(query, endTime.Format("2006-01-02 15:04:05"), id)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println("Endzeit aktualisiert.")
+				break
+			}
+		case "5":
+			for {
+				fmt.Print("Neuer Stundenlohn: ")
+				scanner.Scan()
+				stundenlohnStr := strings.TrimSpace(scanner.Text())
+				stundenlohn, err := strconv.ParseFloat(stundenlohnStr, 64)
+				if err != nil {
+					fmt.Println("Ungültiger Stundenlohn! Bitte erneut eingeben.")
+					continue
+				}
+				query = `UPDATE work_sessions SET stundenlohn = ? WHERE id = ?`
+				_, err = db.Exec(query, stundenlohn, id)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println("Stundenlohn aktualisiert.")
+				break
+			}
+		case "6":
+			return
+		default:
+			fmt.Println("Ungültige Eingabe!")
+		}
 	}
 }
