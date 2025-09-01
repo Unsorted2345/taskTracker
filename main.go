@@ -79,7 +79,7 @@ func timer(db *sql.DB) {
 	for input != "stop" {
 		fmt.Scanln(&input)
 		end = time.Now()
-		difference = end.Sub(start).Round(time.Second)
+		difference = end.Sub(start)
 	}
 
 	fmt.Println("timer stopped")
@@ -106,7 +106,7 @@ func timer(db *sql.DB) {
 	scanner.Scan()
 	description = strings.TrimSpace(scanner.Text())
 
-	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference.String(), stundenlohn, verdienst)
+	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), int64(difference.Seconds()), stundenlohn, verdienst)
 	defer fmt.Printf("Session '%s' gespeichert! Dauer: %v. Verdienst: %.2f€\n", title, difference, verdienst)
 }
 
@@ -119,7 +119,7 @@ func createTable(db *sql.DB) {
 		description TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT,
-		difference TEXT,
+		difference INTEGER,
 		stundenlohn REAL,
 		verdienst REAL
     );`
@@ -131,7 +131,7 @@ func createTable(db *sql.DB) {
 }
 
 // Diese Funktion speichert eine Session in der Datenbank
-func saveSession(db *sql.DB, title string, description string, startTime string, endTime string, difference string, stundenlohn float64, verdienst float64) {
+func saveSession(db *sql.DB, title string, description string, startTime string, endTime string, difference int64, stundenlohn float64, verdienst float64) {
 	query := `INSERT INTO work_sessions (title, description, start_time, end_time, difference, stundenlohn, verdienst) VALUES (?, ?, ?, ?, ?, ? ,?)`
 
 	_, err := db.Exec(query, title, description, startTime, endTime, difference, stundenlohn, verdienst)
@@ -153,15 +153,17 @@ func listSessions(db *sql.DB) {
 	fmt.Println("\n=== Alle Sessions ===")
 	for rows.Next() {
 		var id int
-		var title, startTime, endTime, difference string
+		var title, startTime, endTime string
+		var difference int64
 		var stundenlohn, verdienst float64
 
 		err := rows.Scan(&id, &title, &startTime, &endTime, &difference, &stundenlohn, &verdienst)
 		if err != nil {
 			panic(err)
 		}
-
-		fmt.Printf("ID: %d | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n", id, title, startTime, endTime, difference, stundenlohn, verdienst)
+		dauer := time.Duration(difference) * time.Second
+		fmt.Printf("ID: %d | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n",
+			id, title, startTime, endTime, dauer.String(), stundenlohn, verdienst)
 	}
 	fmt.Println("=====================")
 }
@@ -209,7 +211,7 @@ func addSession(db *sql.DB) {
 		return
 	}
 
-	difference = end.Sub(start).Round(time.Second)
+	difference = end.Sub(start)
 
 	fmt.Print("Stundenlohn eingeben: ")
 	scanner.Scan()
@@ -223,7 +225,7 @@ func addSession(db *sql.DB) {
 	stunden := difference.Hours()
 	verdienst := math.Round((stunden*stundenlohn)*100) / 100
 
-	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference.String(), stundenlohn, verdienst)
+	saveSession(db, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), int64(difference.Seconds()), stundenlohn, verdienst)
 	defer fmt.Printf("Session '%s' gespeichert! Dauer: %v. Verdienst: %.2f€\n", title, difference, verdienst)
 }
 
@@ -237,7 +239,7 @@ func showSessionByID(db *sql.DB, id int) bool {
 		description string
 		startTime   string
 		endTime     string
-		difference  string
+		difference  int64
 		stundenlohn float64
 		verdienst   float64
 	)
@@ -250,8 +252,9 @@ func showSessionByID(db *sql.DB, id int) bool {
 		}
 		panic(err)
 	}
-
-	fmt.Printf("ID: %d | %s | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n", id, title, description, startTime, endTime, difference, stundenlohn, verdienst)
+	dauer := time.Duration(difference) * time.Second
+	fmt.Printf("ID: %d | %s | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n",
+		id, title, description, startTime, endTime, dauer.String(), stundenlohn, verdienst)
 	return true
 }
 
@@ -285,6 +288,7 @@ func deleteSession(db *sql.DB) {
 
 func editSession(db *sql.DB) {
 	var query string
+	var getQuery string
 	var id int
 	var choice string
 	var scanner = bufio.NewScanner(os.Stdin)
@@ -301,28 +305,30 @@ func editSession(db *sql.DB) {
 		fmt.Println("3. Startzeit")
 		fmt.Println("4. Endzeit")
 		fmt.Println("5. Stundenlohn")
-		fmt.Println("6. Beenden")
+		fmt.Println("6. Zurück")
 		fmt.Print("Wähle eine Option: ")
 
 		fmt.Scanln(&choice)
 
 		switch choice {
 		case "1":
-			title := ""
-			for title == "" {
+			var title string
+			for {
 				fmt.Print("Neuer Titel: ")
 				scanner.Scan()
 				title = strings.TrimSpace(scanner.Text())
 				if title == "" {
 					fmt.Println("Titel darf nicht leer sein!")
+					continue
 				}
+				query = `UPDATE work_sessions SET title = ? WHERE id = ?`
+				_, err := db.Exec(query, title, id)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Println("Titel aktualisiert.")
+				break
 			}
-			query = `UPDATE work_sessions SET title = ? WHERE id = ?`
-			_, err := db.Exec(query, title, id)
-			if err != nil {
-				panic(err)
-			}
-			fmt.Println("Titel aktualisiert.")
 		case "2":
 			fmt.Print("Neue Beschreibung: ")
 			scanner.Scan()
@@ -334,19 +340,39 @@ func editSession(db *sql.DB) {
 			}
 			fmt.Println("Beschreibung aktualisiert.")
 		case "3":
-			var startTime time.Time
+			var start, end time.Time
+			var difference time.Duration
+			var stundenlohn float64
+			getQuery = `SELECT end_time, stundenlohn FROM work_sessions WHERE id = ?`
+
+			row := db.QueryRow(getQuery, id)
+
+			var endStr string
+			err := row.Scan(&endStr, &stundenlohn)
+			if err != nil {
+				panic(err)
+			}
+
+			end, err = time.Parse("2006-01-02 15:04:05", endStr)
+			if err != nil {
+				fmt.Println("Ungültiges Format in der Datenbank für end_time!")
+				return
+			}
 			for {
 				fmt.Print("Neue Startzeit (YYYY-MM-DD HH:MM:SS): ")
 				scanner.Scan()
 				startStr := strings.TrimSpace(scanner.Text())
 				var err error
-				startTime, err = time.Parse("2006-01-02 15:04:05", startStr)
+				start, err = time.Parse("2006-01-02 15:04:05", startStr)
 				if err != nil {
 					fmt.Println("Ungültiges Format! Bitte erneut eingeben.")
 					continue
 				}
-				query = `UPDATE work_sessions SET start_time = ? WHERE id = ?`
-				_, err = db.Exec(query, startTime.Format("2006-01-02 15:04:05"), id)
+				difference = end.Sub(start).Round(time.Second)
+				stunden := difference.Hours()
+				verdienst := math.Round((stunden*stundenlohn)*100) / 100
+				query = `UPDATE work_sessions SET start_time = ?, difference = ?, verdienst = ? WHERE id = ?`
+				_, err = db.Exec(query, start.Format("2006-01-02 15:04:05"), int64(difference.Seconds()), verdienst, id)
 				if err != nil {
 					panic(err)
 				}
@@ -354,19 +380,39 @@ func editSession(db *sql.DB) {
 				break
 			}
 		case "4":
-			var endTime time.Time
+			var start, end time.Time
+			var difference time.Duration
+			var stundenlohn float64
+			getQuery = `SELECT start_time, stundenlohn FROM work_sessions WHERE id = ?`
+
+			row := db.QueryRow(getQuery, id)
+
+			var startStr string
+			err := row.Scan(&startStr, &stundenlohn)
+			if err != nil {
+				panic(err)
+			}
+
+			start, err = time.Parse("2006-01-02 15:04:05", startStr)
+			if err != nil {
+				fmt.Println("Ungültiges Format in der Datenbank für start_time!")
+				return
+			}
 			for {
 				fmt.Print("Neue Endzeit (YYYY-MM-DD HH:MM:SS): ")
 				scanner.Scan()
 				endStr := strings.TrimSpace(scanner.Text())
 				var err error
-				endTime, err = time.Parse("2006-01-02 15:04:05", endStr)
+				end, err = time.Parse("2006-01-02 15:04:05", endStr)
 				if err != nil {
 					fmt.Println("Ungültiges Format! Bitte erneut eingeben.")
 					continue
 				}
-				query = `UPDATE work_sessions SET end_time = ? WHERE id = ?`
-				_, err = db.Exec(query, endTime.Format("2006-01-02 15:04:05"), id)
+				difference = end.Sub(start).Round(time.Second)
+				stunden := difference.Hours()
+				verdienst := math.Round((stunden*stundenlohn)*100) / 100
+				query = `UPDATE work_sessions SET end_time = ?, difference = ?, verdienst = ? WHERE id = ?`
+				_, err = db.Exec(query, end.Format("2006-01-02 15:04:05"), int64(difference.Seconds()), verdienst, id)
 				if err != nil {
 					panic(err)
 				}
@@ -374,6 +420,15 @@ func editSession(db *sql.DB) {
 				break
 			}
 		case "5":
+			var differenceSeconds int64
+			getQuery = `SELECT difference FROM work_sessions WHERE id = ?`
+			row := db.QueryRow(getQuery, id)
+			err := row.Scan(&differenceSeconds)
+			if err != nil {
+				panic(err)
+			}
+			difference := time.Duration(differenceSeconds) * time.Second
+
 			for {
 				fmt.Print("Neuer Stundenlohn: ")
 				scanner.Scan()
@@ -383,8 +438,10 @@ func editSession(db *sql.DB) {
 					fmt.Println("Ungültiger Stundenlohn! Bitte erneut eingeben.")
 					continue
 				}
-				query = `UPDATE work_sessions SET stundenlohn = ? WHERE id = ?`
-				_, err = db.Exec(query, stundenlohn, id)
+				stunden := difference.Hours()
+				verdienst := math.Round((stunden*stundenlohn)*100) / 100
+				query = `UPDATE work_sessions SET stundenlohn = ?, verdienst = ? WHERE id = ?`
+				_, err = db.Exec(query, stundenlohn, verdienst, id)
 				if err != nil {
 					panic(err)
 				}
