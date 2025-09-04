@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite" // Statt go-sqlite3
 )
 
@@ -115,26 +116,48 @@ func createTable(db *sql.DB) {
 	query := `
     CREATE TABLE IF NOT EXISTS work_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+		uuid TEXT UNIQUE NOT NULL,
         title TEXT NOT NULL,
 		description TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT,
 		difference INTEGER,
 		stundenlohn REAL,
-		verdienst REAL
+		verdienst REAL,
+		created_by TEXT NOT NULL
     );`
 
 	_, err := db.Exec(query)
 	if err != nil {
 		panic(err)
 	}
+
+	fmt.Println("Starte GUI...")
+	startGUI(db)
+
+}
+
+func getOrCreateDeviceID() string {
+	// Versuche aus Datei zu lesen
+	data, err := os.ReadFile("device_id.txt")
+	if err == nil {
+		return string(data)
+	}
+
+	// Neue Device-ID erstellen und speichern
+	deviceID := uuid.New().String()
+	os.WriteFile("device_id.txt", []byte(deviceID), 0644)
+	return deviceID
 }
 
 // Diese Funktion speichert eine Session in der Datenbank
 func saveSession(db *sql.DB, title string, description string, startTime string, endTime string, difference int64, stundenlohn float64, verdienst float64) {
-	query := `INSERT INTO work_sessions (title, description, start_time, end_time, difference, stundenlohn, verdienst) VALUES (?, ?, ?, ?, ?, ? ,?)`
+	sessionUUID := uuid.New().String()
+	deviceID := getOrCreateDeviceID()
 
-	_, err := db.Exec(query, title, description, startTime, endTime, difference, stundenlohn, verdienst)
+	query := `INSERT INTO work_sessions (uuid, title, description, start_time, end_time, difference, stundenlohn, verdienst, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := db.Exec(query, sessionUUID, title, description, startTime, endTime, difference, stundenlohn, verdienst, deviceID)
 	if err != nil {
 		panic(err)
 	}
@@ -230,11 +253,12 @@ func addSession(db *sql.DB) {
 }
 
 func showSessionByID(db *sql.DB, id int) bool {
-	query := `SELECT id, title, description, start_time, end_time, difference, stundenlohn, verdienst FROM work_sessions WHERE id = ?`
+	query := `SELECT id, uuid, title, description, start_time, end_time, difference, stundenlohn, verdienst FROM work_sessions WHERE id = ?`
 	row := db.QueryRow(query, id)
 
 	var (
 		sID         int
+		sessionUUID string
 		title       string
 		description string
 		startTime   string
@@ -244,7 +268,7 @@ func showSessionByID(db *sql.DB, id int) bool {
 		verdienst   float64
 	)
 
-	err := row.Scan(&sID, &title, &description, &startTime, &endTime, &difference, &stundenlohn, &verdienst)
+	err := row.Scan(&sID, &sessionUUID, &title, &description, &startTime, &endTime, &difference, &stundenlohn, &verdienst)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			fmt.Printf("Keine Session mit ID %d gefunden.\n", id)
@@ -253,8 +277,8 @@ func showSessionByID(db *sql.DB, id int) bool {
 		panic(err)
 	}
 	dauer := time.Duration(difference) * time.Second
-	fmt.Printf("ID: %d | %s | %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n",
-		id, title, description, startTime, endTime, dauer.String(), stundenlohn, verdienst)
+	fmt.Printf("ID: %d | UUID %s | Titel: %s | Beschreibung: %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€\n",
+		id, sessionUUID, title, description, startTime, endTime, dauer.String(), stundenlohn, verdienst)
 	return true
 }
 
