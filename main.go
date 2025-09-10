@@ -253,7 +253,7 @@ func addSession(db *sql.DB) {
 }
 
 func showSessionByID(db *sql.DB, id int) bool {
-	query := `SELECT id, uuid, title, description, start_time, end_time, difference, stundenlohn, verdienst FROM work_sessions WHERE id = ?`
+	query := `SELECT id, uuid, title, description, start_time, end_time, difference, stundenlohn, verdienst, created_by FROM work_sessions WHERE id = ?`
 	row := db.QueryRow(query, id)
 
 	var (
@@ -266,9 +266,10 @@ func showSessionByID(db *sql.DB, id int) bool {
 		difference  int64
 		stundenlohn float64
 		verdienst   float64
+		createdBy   string
 	)
 
-	err := row.Scan(&sID, &sessionUUID, &title, &description, &startTime, &endTime, &difference, &stundenlohn, &verdienst)
+	err := row.Scan(&sID, &sessionUUID, &title, &description, &startTime, &endTime, &difference, &stundenlohn, &verdienst, &createdBy)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			fmt.Printf("Keine Session mit ID %d gefunden.\n", id)
