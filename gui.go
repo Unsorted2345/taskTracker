@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"os"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -27,10 +31,18 @@ type Session struct {
 	createdBy   string
 }
 
-func startGUI(db *sql.DB) {
+func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("TaskTracker")
 	myWindow.Resize(fyne.NewSize(800, 600))
+
+	db, err := sql.Open("sqlite", "taskTracker.db")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	createTable(db)
 
 	// Haupt-Tabs
 	tabs := container.NewAppTabs(
@@ -644,4 +656,53 @@ func returnSessionByID(db *sql.DB, id int) (Session string, status bool) {
 	session := fmt.Sprintf("ID: %d | UUID %s | Titel: %s | Beschreibung: %s | %s - %s | Dauer: %s | Lohn: %.2f€/h | Verdienst: %.2f€ | Erstellt von: %s",
 		sID, sessionUUID, title, description, startTime, endTime, (time.Duration(difference) * time.Second).String(), stundenlohn, verdienst, createdBy)
 	return session, true
+}
+
+func createTable(db *sql.DB) {
+	query := `
+    CREATE TABLE IF NOT EXISTS work_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+		uuid TEXT UNIQUE NOT NULL,
+        title TEXT NOT NULL,
+		description TEXT,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+		difference INTEGER,
+		stundenlohn REAL,
+		verdienst REAL,
+		created_by TEXT NOT NULL
+    );`
+
+	_, err := db.Exec(query)
+	if err != nil {
+		panic(err)
+	}
+
+}
+
+func getOrCreateDeviceID() string {
+	// Versuche aus Datei zu lesen
+	data, err := os.ReadFile("device_id.txt")
+	if err == nil {
+		return string(data)
+	}
+
+	// Neue Device-ID erstellen und speichern
+	deviceID := uuid.New().String()
+	os.WriteFile("device_id.txt", []byte(deviceID), 0644)
+	return deviceID
+}
+
+// Diese Funktion speichert eine Session in der Datenbank
+func saveSession(db *sql.DB, title string, description string, startTime string, endTime string, difference int64, stundenlohn float64, verdienst float64) {
+	sessionUUID := uuid.New().String()
+	deviceID := getOrCreateDeviceID()
+
+	query := `INSERT INTO work_sessions (uuid, title, description, start_time, end_time, difference, stundenlohn, verdienst, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	_, err := db.Exec(query, sessionUUID, title, description, startTime, endTime, difference, stundenlohn, verdienst, deviceID)
+	if err != nil {
+		panic(err)
+	}
+
 }
