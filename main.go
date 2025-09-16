@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -27,6 +28,8 @@ type Session struct {
 	Description string
 	StartTime   string
 	EndTime     string
+	startUnix   int64
+	endUnix     int64
 	Difference  int64
 	HourlyRate  float64
 	Earnings    float64
@@ -65,94 +68,205 @@ func main() {
 // createTimerTab builds the timer UI where user can start/stop and save a session.
 // The timer calculates duration (time.Duration) and earnings before saving.
 func createTimerTab(db *sql.DB) fyne.CanvasObject {
-	var start, end time.Time   // runtime start/end time
-	var duration time.Duration // computed duration
-	var startBtn, stopBtn, saveBtn *widget.Button
+	var start, end time.Time
+	var duration time.Duration
+	var ticker *time.Ticker
+	var tickerQuit chan struct{}
+	var startBtn, stopBtn, saveBtn, setRateBtn *widget.Button
 	var titleEntry, descEntry, hourlyRateEntry *widget.Entry
 
-	// status label shows messages to the user
+	// status + bindings for thread-safe live updates
 	statusLabel := widget.NewLabel("Timer ready")
+	elapsedData := binding.NewString()
+	elapsedLabel := widget.NewLabelWithData(elapsedData)
+	_ = elapsedData.Set("00:00:00")
 
-	// create and configure entry widgets
+	earningsData := binding.NewString()
+	earningsLabel := widget.NewLabelWithData(earningsData)
+	_ = earningsData.Set("0.00€")
+
+	// show current rate
+	rateDisplay := widget.NewLabel("Rate: -")
+	var currentRate float64
+	var rateSet bool
+
+	// create entries
 	titleEntry = widget.NewEntry()
 	descEntry = widget.NewEntry()
 	hourlyRateEntry = widget.NewEntry()
 
-	// create start button
-	startBtn = widget.NewButton("Start timer", func() {
-		statusLabel.SetText("Timer running...")
-		startBtn.Hide()
-		stopBtn.Show()
-		start = time.Now()
-	})
-
-	// create stop button
-	stopBtn = widget.NewButton("Stop timer", func() {
-		statusLabel.SetText("Timer stopped")
-		stopBtn.Hide()
-		titleEntry.Show()
-		descEntry.Show()
-		hourlyRateEntry.Show()
-		saveBtn.Show()
-		end = time.Now()
-		duration = end.Sub(start)
-	})
-
-	// create save button (converts inputs and persists session)
-	saveBtn = widget.NewButton("Save session", func() {
-		// hide input widgets and show start again
-		titleEntry.Hide()
-		descEntry.Hide()
-		hourlyRateEntry.Hide()
-		saveBtn.Hide()
-		startBtn.Show()
-
-		// parse hourly rate from entry
-		hourlyRate, err := strconv.ParseFloat(hourlyRateEntry.Text, 64)
+	// button to lock in the hourly rate before starting
+	setRateBtn = widget.NewButton("Set rate", func() {
+		r, err := strconv.ParseFloat(hourlyRateEntry.Text, 64)
 		if err != nil {
 			statusLabel.SetText("Invalid hourly rate!")
 			return
 		}
+		currentRate = r
+		rateSet = true
+		rateDisplay.SetText(fmt.Sprintf("Rate: %.2f€/h", currentRate))
+		hourlyRateEntry.Hide()
+		setRateBtn.Hide()
+	})
 
-		// compute earnings and round to 2 decimals
+	// start button: requires a set rate (or tries to parse one)
+	startBtn = widget.NewButton("Start timer", func() {
+		if !rateSet {
+			// try to parse rate on start if not set
+			r, err := strconv.ParseFloat(hourlyRateEntry.Text, 64)
+			if err != nil {
+				statusLabel.SetText("Set a valid hourly rate first!")
+				return
+			}
+			currentRate = r
+			rateSet = true
+			rateDisplay.SetText(fmt.Sprintf("Rate: %.2f€/h", currentRate))
+			hourlyRateEntry.Hide()
+			setRateBtn.Hide()
+		}
+
+		start = time.Now()
+		statusLabel.SetText("Timer running...")
+		startBtn.Hide()
+		stopBtn.Show()
+		elapsedLabel.Show()
+		earningsLabel.Show()
+
+		// stop any previous ticker
+		if ticker != nil {
+			ticker.Stop()
+		}
+		if tickerQuit != nil {
+			close(tickerQuit)
+		}
+
+		ticker = time.NewTicker(time.Second)
+		tickerQuit = make(chan struct{})
+
+		// ticker goroutine updates elapsed and earnings via binding
+		go func(s time.Time, t *time.Ticker, q chan struct{}) {
+			for {
+				select {
+				case <-t.C:
+					el := time.Since(s)
+					h := int(el.Hours())
+					m := int(el.Minutes()) % 60
+					se := int(el.Seconds()) % 60
+					_ = elapsedData.Set(fmt.Sprintf("%02d:%02d:%02d", h, m, se))
+
+					earned := math.Round((el.Hours()*currentRate)*100) / 100
+					_ = earningsData.Set(fmt.Sprintf("%.2f€", earned))
+				case <-q:
+					return
+				}
+			}
+		}(start, ticker, tickerQuit)
+	})
+
+	// stop button: stop ticker, compute final duration and show save inputs
+	stopBtn = widget.NewButton("Stop timer", func() {
+		// stop ticker
+		if ticker != nil {
+			ticker.Stop()
+			ticker = nil
+		}
+		if tickerQuit != nil {
+			close(tickerQuit)
+			tickerQuit = nil
+		}
+
+		end = time.Now()
+		duration = end.Sub(start)
+		statusLabel.SetText("Timer stopped")
+		stopBtn.Hide()
+
+		// show inputs to save session
+		titleEntry.Show()
+		descEntry.Show()
+		hourlyRateEntry.Show()
+		setRateBtn.Show()
+		saveBtn.Show()
+
+		// final values
+		h := int(duration.Hours())
+		m := int(duration.Minutes()) % 60
+		se := int(duration.Seconds()) % 60
+		_ = elapsedData.Set(fmt.Sprintf("%02d:%02d:%02d", h, m, se))
+
+		finalEarned := math.Round((duration.Hours()*currentRate)*100) / 100
+		_ = earningsData.Set(fmt.Sprintf("%.2f€", finalEarned))
+	})
+
+	// save button: persist and reset timer + earnings
+	saveBtn = widget.NewButton("Save session", func() {
+		// hide inputs and show start again
+		titleEntry.Hide()
+		descEntry.Hide()
+		hourlyRateEntry.Hide()
+		setRateBtn.Hide()
+		saveBtn.Hide()
+		startBtn.Show()
+
+		// allow rate to be re-entered next session
+		rateSet = false
+		rateDisplay.SetText("Rate: -")
+
+		// if user changed rate entry before save, prefer parsed value; otherwise use currentRate
+		if hourlyRateEntry.Text != "" {
+			if r, err := strconv.ParseFloat(hourlyRateEntry.Text, 64); err == nil {
+				currentRate = r
+			}
+		}
+
 		hours := duration.Hours()
-		earnings := math.Round((hours*hourlyRate)*100) / 100
+		earnings := math.Round((hours*currentRate)*100) / 100
 
 		// save session (start/end passed as time.Time)
-		err = saveSession(db, titleEntry.Text, descEntry.Text, start, end, int64(duration.Seconds()), hourlyRate, earnings)
+		err := saveSession(db, titleEntry.Text, descEntry.Text, start, end, int64(duration.Seconds()), currentRate, earnings)
 		if err != nil {
 			statusLabel.SetText("Error saving session: " + err.Error())
 			return
 		}
 
-		// inform user and reset inputs
+		// feedback and clear
 		statusLabel.SetText(fmt.Sprintf("Session '%s' saved. Duration: %s. Earnings: %.2f€", titleEntry.Text, duration.String(), earnings))
 		titleEntry.SetText("")
 		descEntry.SetText("")
 		hourlyRateEntry.SetText("")
+
+		// reset live displays
+		_ = elapsedData.Set("00:00:00")
+		_ = earningsData.Set("0.00€")
+		elapsedLabel.Hide()
+		earningsLabel.Hide()
+		hourlyRateEntry.Show()
+		setRateBtn.Show()
 	})
 
-	// hide input elements initially
+	// initial visibility
 	titleEntry.Hide()
 	descEntry.Hide()
-	hourlyRateEntry.Hide()
+	hourlyRateEntry.SetPlaceHolder("Hourly rate (€)")
+	hourlyRateEntry.Show() // let user enter rate before start
+	setRateBtn.Show()
 	saveBtn.Hide()
 	stopBtn.Hide()
+	elapsedLabel.Hide()
+	earningsLabel.Hide()
 
-	// placeholders and configuration
+	// placeholders and text config
 	titleEntry.SetPlaceHolder("Enter title...")
 	descEntry.SetPlaceHolder("Description (optional)")
 	descEntry.MultiLine = true
-	hourlyRateEntry.SetPlaceHolder("Hourly rate (€)")
 
-	// layout: status, buttons row, separator, inputs
+	// layout: status, live displays, controls, inputs
 	return container.NewVBox(
 		statusLabel,
-		container.NewHBox(startBtn, stopBtn),
+		container.NewHBox(widget.NewLabel("Elapsed: "), elapsedLabel, widget.NewLabel("  Earned: "), earningsLabel, rateDisplay),
+		container.NewVBox(hourlyRateEntry, setRateBtn, startBtn, stopBtn),
 		widget.NewSeparator(),
 		titleEntry,
 		descEntry,
-		hourlyRateEntry,
 		saveBtn,
 	)
 }
@@ -188,6 +302,7 @@ func createSessionsTab(db *sql.DB) fyne.CanvasObject {
 
 			// pack into a card for better visual separation
 			card := widget.NewCard(s.Title, "", container.NewVBox(
+				widget.NewLabel("ID: "+strconv.Itoa(s.ID)),
 				timeLabel,
 				durationLabel,
 				earningsLabel,
@@ -655,7 +770,7 @@ func createDeleteSessionTab(db *sql.DB) fyne.CanvasObject {
 
 // getAllSessions reads all sessions from the DB and returns them as []Session.
 func getAllSessions(db *sql.DB) []Session {
-	query := "SELECT id, title, description, start_time, end_time, difference, hourly_rate, earnings, created_by FROM work_sessions ORDER BY end_time DESC"
+	query := "SELECT id, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by FROM work_sessions ORDER BY end_time DESC"
 	rows, err := db.Query(query)
 	if err != nil {
 		panic(err)
@@ -665,7 +780,7 @@ func getAllSessions(db *sql.DB) []Session {
 	var sessions []Session
 	for rows.Next() {
 		var s Session
-		err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.StartTime, &s.EndTime, &s.Difference, &s.HourlyRate, &s.Earnings, &s.CreatedBy)
+		err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.StartTime, &s.EndTime, &s.endUnix, &s.startUnix, &s.Difference, &s.HourlyRate, &s.Earnings, &s.CreatedBy)
 		if err != nil {
 			panic(err)
 		}
@@ -686,13 +801,15 @@ func getSessionSummaryByID(db *sql.DB, id int) (string, bool) {
 		description string
 		startTime   string
 		endTime     string
+		startUnix   int64
+		endUnix     int64
 		diffSeconds int64
 		hourlyRate  float64
 		earnings    float64
 		createdBy   string
 	)
 
-	err := row.Scan(&sID, &sessionUUID, &title, &description, &startTime, &endTime, &diffSeconds, &hourlyRate, &earnings, &createdBy)
+	err := row.Scan(&sID, &sessionUUID, &title, &description, &startTime, &endTime, &startUnix, &endUnix, &diffSeconds, &hourlyRate, &earnings, &createdBy)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			msg := fmt.Sprintf("No session with ID %d found.", id)
@@ -716,6 +833,8 @@ func createTable(db *sql.DB) {
         description TEXT,
         start_time TEXT NOT NULL,
         end_time TEXT,
+		start_unix INTEGER,
+		end_unix INTEGER,
         difference INTEGER,
         hourly_rate REAL,
         earnings REAL,
@@ -743,9 +862,9 @@ func saveSession(db *sql.DB, title string, description string, start time.Time, 
 	sessionUUID := uuid.New().String()
 	deviceID := getDeviceID()
 
-	query := `INSERT INTO work_sessions (uuid, title, description, start_time, end_time, difference, hourly_rate, earnings, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO work_sessions (uuid, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := db.Exec(query, sessionUUID, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), difference, hourlyRate, earnings, deviceID)
+	_, err := db.Exec(query, sessionUUID, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), start.Unix(), end.Unix(), difference, hourlyRate, earnings, deviceID)
 	if err != nil {
 		return err
 	}
