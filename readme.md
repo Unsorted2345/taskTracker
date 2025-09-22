@@ -25,3 +25,9 @@
 <p align="left">For running the programm from a .EXE file you don't need any software. To. Compile it you need Cgo, GCC and MYSM. For compiling you can use this command "go build -ldflags "-s -w".</p>
 
 ###
+
+<h3 align="left">Improving</h3>
+
+###
+
+<p align="left">Feel free to make a pull request so the programm can be improved</p>
