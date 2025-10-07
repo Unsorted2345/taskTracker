@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -47,10 +49,14 @@ func main() {
 	myWindow.Resize(fyne.NewSize(800, 600))
 
 	// open sqlite database (modernc.org/sqlite driver)
-	db, err := sql.Open("sqlite", "taskTracker.db")
+	userConfigDir, _ := os.UserConfigDir()
+	dbPath := filepath.Join(userConfigDir, "TaskTracker", "taskTracker.db")
+	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		panic(err)
 	}
+
 	defer db.Close()
 
 	// ensure table exists
@@ -960,44 +966,46 @@ func exportSessions(db *sql.DB) fyne.CanvasObject {
 	})
 
 	exportCSVBtn = widget.NewButton("Export to CSV", func() {
-
 		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".csv"
-		sessions := getAllSessions(db) // or a filtered query using unix timestamps
-		file, err := os.Create(filename)
-		if err != nil {
-			statusLabel.SetText("Error creating file: " + err.Error())
-			return
-		}
+		parent := fyne.CurrentApp().Driver().AllWindows()[0]
+		fd := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+			if w == nil {
+				return // user cancelled
+			}
+			defer w.Close()
 
-		defer file.Close()
+			// write BOM + CSV
+			_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+			writer := csv.NewWriter(w)
+			writer.Comma = ';'
 
-		file.Write([]byte{0xEF, 0xBB, 0xBF})
-
-		writer := csv.NewWriter(file)
-		writer.Comma = ';' // use semicolon as separator
-		defer writer.Flush()
-
-		// write header
-		header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
-		if err := writer.Write(header); err != nil {
-			statusLabel.SetText("Error writing header to CSV: " + err.Error())
-			return
-		}
-
-		// write session rows
-		for _, s := range sessions {
-			row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
-			if err := writer.Write(row); err != nil {
-				statusLabel.SetText("Error writing row to CSV: " + err.Error())
+			header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
+			if err := writer.Write(header); err != nil {
+				statusLabel.SetText("Error writing header: " + err.Error())
 				return
 			}
-		}
-		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), filename))
+
+			sessions := getAllSessions(db)
+			for _, s := range sessions {
+				row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
+				if err := writer.Write(row); err != nil {
+					statusLabel.SetText("Error writing row: " + err.Error())
+					return
+				}
+			}
+			writer.Flush()
+			if err := writer.Error(); err != nil {
+				statusLabel.SetText("Error finalizing CSV: " + err.Error())
+				return
+			}
+			statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), w.URI().Name()))
+		}, parent)
+		fd.SetFileName(filename)
+		fd.Show()
 	})
 
+	// replace exportSortCSVBtn handler (uses parsed time range)
 	exportSortCSVBtn = widget.NewButton("Export to CSV", func() {
-
-		// validate and parse inputs
 		startT, err := parseExportTime(startExport.Text)
 		if err != nil {
 			statusLabel.SetText("Invalid start time. Use format: 2006-01-02 15:04")
@@ -1012,109 +1020,91 @@ func exportSessions(db *sql.DB) fyne.CanvasObject {
 			statusLabel.SetText("End time must be after start time")
 			return
 		}
-		// now you can use startT.Unix() / endT.Unix() to filter sessions
 
 		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".csv"
-		sessions := getAllSessions(db) // or a filtered query using unix timestamps
-		file, err := os.Create(filename)
-		sessionsExported := 0
-		if err != nil {
-			statusLabel.SetText("Error creating file: " + err.Error())
-			return
-		}
-
-		defer file.Close()
-
-		file.Write([]byte{0xEF, 0xBB, 0xBF})
-
-		writer := csv.NewWriter(file)
-		writer.Comma = ';' // use semicolon as separator
-		defer writer.Flush()
-
-		// write header
-		header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
-		if err := writer.Write(header); err != nil {
-			statusLabel.SetText("Error writing header to CSV: " + err.Error())
-			return
-		}
-
-		// write session rows
-		for _, s := range sessions {
-			if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
-				continue // skip sessions outside the range
-			}
-			row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
-			if err := writer.Write(row); err != nil {
-				statusLabel.SetText("Error writing row to CSV: " + err.Error())
+		parent := fyne.CurrentApp().Driver().AllWindows()[0]
+		fd := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+			if w == nil {
 				return
 			}
-			sessionsExported++
-		}
-		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", sessionsExported, filename))
+			defer w.Close()
+
+			_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+			writer := csv.NewWriter(w)
+			writer.Comma = ';'
+			header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
+			if err := writer.Write(header); err != nil {
+				statusLabel.SetText("Error writing header: " + err.Error())
+				return
+			}
+
+			sessions := getAllSessions(db)
+			exported := 0
+			for _, s := range sessions {
+				if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
+					continue
+				}
+				row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
+				if err := writer.Write(row); err != nil {
+					statusLabel.SetText("Error writing row: " + err.Error())
+					return
+				}
+				exported++
+			}
+			writer.Flush()
+			if err := writer.Error(); err != nil {
+				statusLabel.SetText("Error finalizing CSV: " + err.Error())
+				return
+			}
+			statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", exported, w.URI().Name()))
+		}, parent)
+		fd.SetFileName(filename)
+		fd.Show()
 	})
 
+	// replace exportXLSXBtn handler
 	exportXLSXBtn = widget.NewButton("Export to XLSX", func() {
 		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".xlsx"
-		sessions := getAllSessions(db)
+		parent := fyne.CurrentApp().Driver().AllWindows()[0]
+		fd := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+			if w == nil {
+				return
+			}
+			defer w.Close()
 
-		f := excelize.NewFile()
-		defer f.Close()
-
-		sheetName := "Sheet1"
-
-		// Währungsformat für Spalten F und G (Hourly Rate, Earnings)
-		styleEuro, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 226, // Currency format
-		})
-
-		styleTime, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 22, // DateTime format
-		})
-
-		styleDurtation, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 21, // Duration format
-		})
-
-		// Header schreiben (Zeile 1)
-		headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
-		for i, h := range headers {
-			cell := string(rune('A'+i)) + "1" // A1, B1, C1, ...
-			f.SetCellValue(sheetName, cell, h)
-		}
-
-		// Daten schreiben (ab Zeile 2)
-		for rowIdx, s := range sessions {
-			row := rowIdx + 2 // Excel rows start at 1, +1 for header
-			rowStr := strconv.Itoa(row)
-
-			f.SetCellValue(sheetName, "A"+rowStr, s.Title)
-			f.SetCellValue(sheetName, "B"+rowStr, s.Description)
-			f.SetCellValue(sheetName, "C"+rowStr, s.StartTime)
-			f.SetCellValue(sheetName, "D"+rowStr, s.EndTime)
-			f.SetCellValue(sheetName, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
-			f.SetCellValue(sheetName, "F"+rowStr, s.HourlyRate)
-			f.SetCellValue(sheetName, "G"+rowStr, s.Earnings)
-		}
-
-		// Währungsformat auf Spalten F und G anwenden
-		f.SetColStyle(sheetName, "C", styleTime)
-		f.SetColStyle(sheetName, "D", styleTime)
-		f.SetColStyle(sheetName, "E", styleDurtation)
-		f.SetColStyle(sheetName, "F", styleEuro)
-		f.SetColStyle(sheetName, "G", styleEuro)
-
-		// Datei speichern
-		if err := f.SaveAs(filename); err != nil {
-			statusLabel.SetText("Error saving XLSX: " + err.Error())
-			return
-		}
-
-		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), filename))
+			sessions := getAllSessions(db)
+			f := excelize.NewFile()
+			defer f.Close()
+			sheet := "Sheet1"
+			headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
+			for i, h := range headers {
+				cell := string(rune('A'+i)) + "1"
+				f.SetCellValue(sheet, cell, h)
+			}
+			for rowIdx, s := range sessions {
+				row := rowIdx + 2
+				rowStr := strconv.Itoa(row)
+				f.SetCellValue(sheet, "A"+rowStr, s.Title)
+				f.SetCellValue(sheet, "B"+rowStr, s.Description)
+				f.SetCellValue(sheet, "C"+rowStr, s.StartTime)
+				f.SetCellValue(sheet, "D"+rowStr, s.EndTime)
+				f.SetCellValue(sheet, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
+				f.SetCellValue(sheet, "F"+rowStr, s.HourlyRate)
+				f.SetCellValue(sheet, "G"+rowStr, s.Earnings)
+			}
+			// write excel file to writer
+			if _, err := f.WriteTo(w); err != nil {
+				statusLabel.SetText("Error writing XLSX: " + err.Error())
+				return
+			}
+			statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), w.URI().Name()))
+		}, parent)
+		fd.SetFileName(filename)
+		fd.Show()
 	})
 
+	// replace exportSortXLSXBtn handler
 	exportSortXLSXBtn = widget.NewButton("Export to XLSX", func() {
-
-		// validate and parse inputs
 		startT, err := parseExportTime(startExport.Text)
 		if err != nil {
 			statusLabel.SetText("Invalid start time. Use format: 2006-01-02 15:04")
@@ -1129,70 +1119,49 @@ func exportSessions(db *sql.DB) fyne.CanvasObject {
 			statusLabel.SetText("End time must be after start time")
 			return
 		}
-		// now you can use startT.Unix() / endT.Unix() to filter sessions
 
 		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".xlsx"
-		sessions := getAllSessions(db)
-		sessionsExported := 0
-
-		f := excelize.NewFile()
-		defer f.Close()
-
-		sheetName := "Sheet1"
-
-		// Währungsformat für Spalten F und G (Hourly Rate, Earnings)
-		styleEuro, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 226, // Currency format
-		})
-
-		styleTime, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 22, // DateTime format
-		})
-
-		styleDurtation, _ := f.NewStyle(&excelize.Style{
-			NumFmt: 21, // Duration format
-		})
-
-		// Header schreiben (Zeile 1)
-		headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
-		for i, h := range headers {
-			cell := string(rune('A'+i)) + "1" // A1, B1, C1, ...
-			f.SetCellValue(sheetName, cell, h)
-		}
-
-		// Daten schreiben (ab Zeile 2)
-		for rowIdx, s := range sessions {
-			if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
-				continue // skip sessions outside the range
+		parent := fyne.CurrentApp().Driver().AllWindows()[0]
+		fd := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
+			if w == nil {
+				return
 			}
-			row := rowIdx + 2 // Excel rows start at 1, +1 for header
-			rowStr := strconv.Itoa(row)
+			defer w.Close()
 
-			f.SetCellValue(sheetName, "A"+rowStr, s.Title)
-			f.SetCellValue(sheetName, "B"+rowStr, s.Description)
-			f.SetCellValue(sheetName, "C"+rowStr, s.StartTime)
-			f.SetCellValue(sheetName, "D"+rowStr, s.EndTime)
-			f.SetCellValue(sheetName, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
-			f.SetCellValue(sheetName, "F"+rowStr, s.HourlyRate)
-			f.SetCellValue(sheetName, "G"+rowStr, s.Earnings)
-
-			sessionsExported++
-		}
-
-		// Währungsformat auf Spalten F und G anwenden
-		f.SetColStyle(sheetName, "C", styleTime)
-		f.SetColStyle(sheetName, "D", styleTime)
-		f.SetColStyle(sheetName, "E", styleDurtation)
-		f.SetColStyle(sheetName, "F", styleEuro)
-		f.SetColStyle(sheetName, "G", styleEuro)
-
-		// Datei speichern
-		if err := f.SaveAs(filename); err != nil {
-			statusLabel.SetText("Error saving XLSX: " + err.Error())
-			return
-		}
-
-		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", sessionsExported, filename))
+			sessions := getAllSessions(db)
+			f := excelize.NewFile()
+			defer f.Close()
+			sheet := "Sheet1"
+			headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
+			for i, h := range headers {
+				cell := string(rune('A'+i)) + "1"
+				f.SetCellValue(sheet, cell, h)
+			}
+			rowNo := 2
+			exported := 0
+			for _, s := range sessions {
+				if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
+					continue
+				}
+				rowStr := strconv.Itoa(rowNo)
+				f.SetCellValue(sheet, "A"+rowStr, s.Title)
+				f.SetCellValue(sheet, "B"+rowStr, s.Description)
+				f.SetCellValue(sheet, "C"+rowStr, s.StartTime)
+				f.SetCellValue(sheet, "D"+rowStr, s.EndTime)
+				f.SetCellValue(sheet, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
+				f.SetCellValue(sheet, "F"+rowStr, s.HourlyRate)
+				f.SetCellValue(sheet, "G"+rowStr, s.Earnings)
+				rowNo++
+				exported++
+			}
+			if _, err := f.WriteTo(w); err != nil {
+				statusLabel.SetText("Error writing XLSX: " + err.Error())
+				return
+			}
+			statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", exported, w.URI().Name()))
+		}, parent)
+		fd.SetFileName(filename)
+		fd.Show()
 	})
 
 	exportSortCSVBtn.Hide()
