@@ -2,14 +2,17 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"image/color"
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite"
 
 	"fyne.io/fyne/v2"
@@ -24,6 +27,7 @@ import (
 // Difference is stored as seconds (int64) and Earnings as float64.
 type Session struct {
 	ID          int
+	uuid        string
 	Title       string
 	Description string
 	StartTime   string
@@ -59,6 +63,7 @@ func main() {
 		container.NewTabItem("Add", createAddSessionTab(db)),
 		container.NewTabItem("Edit", createEditSessionTab(db)),
 		container.NewTabItem("Delete", createDeleteSessionTab(db)),
+		container.NewTabItem("Export", exportSessions(db)),
 	)
 
 	myWindow.SetContent(tabs)
@@ -151,8 +156,8 @@ func createTimerTab(db *sql.DB) fyne.CanvasObject {
 					el := time.Since(s)
 					h := int(el.Hours())
 					m := int(el.Minutes()) % 60
-					se := int(el.Seconds()) % 60
-					_ = elapsedData.Set(fmt.Sprintf("%02d:%02d:%02d", h, m, se))
+					s := int(el.Seconds()) % 60
+					_ = elapsedData.Set(fmt.Sprintf("%02d:%02d:%02d", h, m, s))
 
 					earned := math.Round((el.Hours()*currentRate)*100) / 100
 					_ = earningsData.Set(fmt.Sprintf("%.2f€", earned))
@@ -447,6 +452,8 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 	var idEntry *widget.Entry
 	var loadBtn *widget.Button
 	var editTitleBtn, editDescBtn, editStartBtn, editEndBtn, editHourlyRateBtn *widget.Button
+	var confirmTitleBtn, confirmDescBtn, confirmStartBtn, confirmEndBtn, confirmHourlyRateBtn *widget.Button
+	var cancelBtn *widget.Button
 	var newTitle, newDesc, newStart, newEnd, newHourlyRate *widget.Entry
 
 	// output label displays messages or loaded session summary
@@ -478,6 +485,7 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		}
 		// show edit options
 		idEntry.Hide()
+		idEntry.SetText("")
 		loadBtn.Hide()
 		editTitleBtn.Show()
 		editDescBtn.Show()
@@ -496,6 +504,8 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		editHourlyRateBtn.Hide()
 		newTitle.Show()
 		newTitle.SetPlaceHolder("New title...")
+		confirmTitleBtn.Show()
+		cancelBtn.Show()
 	})
 
 	editDescBtn = widget.NewButton("Edit description", func() {
@@ -506,6 +516,8 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		editHourlyRateBtn.Hide()
 		newDesc.Show()
 		newDesc.SetPlaceHolder("New description...")
+		confirmDescBtn.Show()
+		cancelBtn.Show()
 	})
 
 	editStartBtn = widget.NewButton("Edit start time", func() {
@@ -516,6 +528,8 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		editHourlyRateBtn.Hide()
 		newStart.Show()
 		newStart.SetPlaceHolder("New start (YYYY-MM-DD HH:MM:SS)")
+		confirmStartBtn.Show()
+		cancelBtn.Show()
 	})
 
 	editEndBtn = widget.NewButton("Edit end time", func() {
@@ -526,6 +540,8 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		editHourlyRateBtn.Hide()
 		newEnd.Show()
 		newEnd.SetPlaceHolder("New end (YYYY-MM-DD HH:MM:SS)")
+		confirmEndBtn.Show()
+		cancelBtn.Show()
 	})
 
 	editHourlyRateBtn = widget.NewButton("Edit hourly rate", func() {
@@ -536,10 +552,12 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		editEndBtn.Hide()
 		newHourlyRate.Show()
 		newHourlyRate.SetPlaceHolder("New hourly rate (€)")
+		confirmHourlyRateBtn.Show()
+		cancelBtn.Show()
 	})
 
 	// confirm buttons perform the updates and recompute dependent fields (difference, earnings)
-	confirmTitleBtn := widget.NewButton("Save title", func() {
+	confirmTitleBtn = widget.NewButton("Save title", func() {
 		updateQuery = "UPDATE work_sessions SET title = ? WHERE id = ?"
 		_, err := db.Exec(updateQuery, newTitle.Text, idEntry.Text)
 		if err != nil {
@@ -551,9 +569,10 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		newTitle.Hide()
 		idEntry.Show()
 		loadBtn.Show()
+		confirmTitleBtn.Hide()
 	})
 
-	confirmDescBtn := widget.NewButton("Save description", func() {
+	confirmDescBtn = widget.NewButton("Save description", func() {
 		updateQuery = "UPDATE work_sessions SET description = ? WHERE id = ?"
 		_, err := db.Exec(updateQuery, newDesc.Text, idEntry.Text)
 		if err != nil {
@@ -565,10 +584,11 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		newDesc.Hide()
 		idEntry.Show()
 		loadBtn.Show()
+		confirmDescBtn.Hide()
 	})
 
 	// confirm start: need end time and hourly rate from DB to recompute earnings
-	confirmStartBtn := widget.NewButton("Save start time", func() {
+	confirmStartBtn = widget.NewButton("Save start time", func() {
 		getQuery = "SELECT end_time, hourly_rate FROM work_sessions WHERE id = ?"
 		row := db.QueryRow(getQuery, idEntry.Text)
 		var endStr string
@@ -579,12 +599,12 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 			return
 		}
 
-		endTime, err := time.Parse("2006-01-02 15:04:05", endStr)
+		endTime, err := time.Parse("2006-01-02 15:04", endStr)
 		if err != nil {
 			outputLabel.SetText("Invalid end time in DB!")
 			return
 		}
-		newStartTime, err := time.Parse("2006-01-02 15:04:05", newStart.Text)
+		newStartTime, err := time.Parse("2006-01-02 15:04", newStart.Text)
 		if err != nil {
 			outputLabel.SetText("Invalid start time format!")
 			return
@@ -604,10 +624,11 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		newStart.Hide()
 		idEntry.Show()
 		loadBtn.Show()
+		confirmStartBtn.Hide()
 	})
 
 	// confirm end: need start time and hourly rate from DB to recompute earnings
-	confirmEndBtn := widget.NewButton("Save end time", func() {
+	confirmEndBtn = widget.NewButton("Save end time", func() {
 		getQuery = "SELECT start_time, hourly_rate FROM work_sessions WHERE id = ?"
 		row := db.QueryRow(getQuery, idEntry.Text)
 		var startStr string
@@ -618,12 +639,12 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 			return
 		}
 
-		startTime, err := time.Parse("2006-01-02 15:04:05", startStr)
+		startTime, err := time.Parse("2006-01-02 15:04", startStr)
 		if err != nil {
 			outputLabel.SetText("Invalid start time in DB!")
 			return
 		}
-		newEndTime, err := time.Parse("2006-01-02 15:04:05", newEnd.Text)
+		newEndTime, err := time.Parse("2006-01-02 15:04", newEnd.Text)
 		if err != nil {
 			outputLabel.SetText("Invalid end time format!")
 			return
@@ -642,10 +663,11 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		newEnd.Hide()
 		idEntry.Show()
 		loadBtn.Show()
+		confirmEndBtn.Hide()
 	})
 
 	// confirm rate: read stored difference (seconds), compute earnings with new rate
-	confirmHourlyRateBtn := widget.NewButton("Save hourly rate", func() {
+	confirmHourlyRateBtn = widget.NewButton("Save hourly rate", func() {
 		getQuery = "SELECT difference FROM work_sessions WHERE id = ?"
 		row := db.QueryRow(getQuery, idEntry.Text)
 		var diffSeconds int64
@@ -673,6 +695,30 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		newHourlyRate.Hide()
 		idEntry.Show()
 		loadBtn.Show()
+		confirmHourlyRateBtn.Hide()
+	})
+
+	cancelBtn = widget.NewButton("Cancel", func() {
+		// hide all edit widgets and show id entry + load button
+		newTitle.Hide()
+		newDesc.Hide()
+		newStart.Hide()
+		newEnd.Hide()
+		newHourlyRate.Hide()
+		newTitle.SetText("")
+		newDesc.SetText("")
+		newStart.SetText("")
+		newEnd.SetText("")
+		newHourlyRate.SetText("")
+		confirmTitleBtn.Hide()
+		confirmDescBtn.Hide()
+		confirmStartBtn.Hide()
+		confirmEndBtn.Hide()
+		confirmHourlyRateBtn.Hide()
+		cancelBtn.Hide()
+		idEntry.Show()
+		loadBtn.Show()
+		outputLabel.SetText("Edit cancelled")
 	})
 
 	// hide edit widgets initially so UI starts minimal
@@ -691,6 +737,7 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 	confirmStartBtn.Hide()
 	confirmEndBtn.Hide()
 	confirmHourlyRateBtn.Hide()
+	cancelBtn.Hide()
 
 	// assemble edit tab layout
 	return container.NewVBox(
@@ -713,6 +760,7 @@ func createEditSessionTab(db *sql.DB) fyne.CanvasObject {
 		confirmStartBtn,
 		confirmEndBtn,
 		confirmHourlyRateBtn,
+		cancelBtn,
 	)
 }
 
@@ -770,7 +818,7 @@ func createDeleteSessionTab(db *sql.DB) fyne.CanvasObject {
 
 // getAllSessions reads all sessions from the DB and returns them as []Session.
 func getAllSessions(db *sql.DB) []Session {
-	query := "SELECT id, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by FROM work_sessions ORDER BY end_time DESC"
+	query := "SELECT id, uuid, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by FROM work_sessions ORDER BY end_time DESC"
 	rows, err := db.Query(query)
 	if err != nil {
 		panic(err)
@@ -780,7 +828,7 @@ func getAllSessions(db *sql.DB) []Session {
 	var sessions []Session
 	for rows.Next() {
 		var s Session
-		err := rows.Scan(&s.ID, &s.Title, &s.Description, &s.StartTime, &s.EndTime, &s.endUnix, &s.startUnix, &s.Difference, &s.HourlyRate, &s.Earnings, &s.CreatedBy)
+		err := rows.Scan(&s.ID, &s.uuid, &s.Title, &s.Description, &s.StartTime, &s.EndTime, &s.endUnix, &s.startUnix, &s.Difference, &s.HourlyRate, &s.Earnings, &s.CreatedBy)
 		if err != nil {
 			panic(err)
 		}
@@ -791,7 +839,7 @@ func getAllSessions(db *sql.DB) []Session {
 
 // getSessionSummaryByID returns a printable summary and a boolean indicating if found.
 func getSessionSummaryByID(db *sql.DB, id int) (string, bool) {
-	query := "SELECT id, uuid, title, description, start_time, end_time, difference, hourly_rate, earnings, created_by FROM work_sessions WHERE id = ?"
+	query := "SELECT id, uuid, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by FROM work_sessions WHERE id = ?"
 	row := db.QueryRow(query, id)
 
 	var (
@@ -864,9 +912,308 @@ func saveSession(db *sql.DB, title string, description string, start time.Time, 
 
 	query := `INSERT INTO work_sessions (uuid, title, description, start_time, end_time, start_unix, end_unix, difference, hourly_rate, earnings, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := db.Exec(query, sessionUUID, title, description, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), start.Unix(), end.Unix(), difference, hourlyRate, earnings, deviceID)
+	_, err := db.Exec(query, sessionUUID, title, description, start.Format("2006-01-02 15:04"), end.Format("2006-01-02 15:04"), start.Unix(), end.Unix(), difference, hourlyRate, earnings, deviceID)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+// parseExportTime parses input like "2006-01-02 15:04" and returns time in local location.
+func parseExportTime(input string) (time.Time, error) {
+	layout := "2006-01-02 15:04"
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return time.Time{}, fmt.Errorf("empty input")
+	}
+	// use ParseInLocation so local timezone is applied
+	return time.ParseInLocation(layout, input, time.Local)
+}
+
+func exportSessions(db *sql.DB) fyne.CanvasObject {
+	statusLabel := widget.NewLabel("")
+	startExport := widget.NewEntry()
+	endExport := widget.NewEntry()
+	var exportCSVBtn, exportXLSXBtn, exportSortCSVBtn, exportSortXLSXBtn, sortBtn, cancelBtn *widget.Button
+
+	sortBtn = widget.NewButton("Sort by time range", func() {
+		startExport.Show()
+		endExport.Show()
+		exportSortCSVBtn.Show()
+		exportSortXLSXBtn.Show()
+		sortBtn.Hide()
+		exportCSVBtn.Hide()
+		exportXLSXBtn.Hide()
+	})
+
+	cancelBtn = widget.NewButton("Cancel", func() {
+		startExport.Hide()
+		endExport.Hide()
+		exportSortCSVBtn.Hide()
+		exportSortXLSXBtn.Hide()
+		sortBtn.Show()
+		exportCSVBtn.Show()
+		exportXLSXBtn.Show()
+		startExport.SetText("")
+		endExport.SetText("")
+		statusLabel.SetText("")
+	})
+
+	exportCSVBtn = widget.NewButton("Export to CSV", func() {
+
+		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".csv"
+		sessions := getAllSessions(db) // or a filtered query using unix timestamps
+		file, err := os.Create(filename)
+		if err != nil {
+			statusLabel.SetText("Error creating file: " + err.Error())
+			return
+		}
+
+		defer file.Close()
+
+		file.Write([]byte{0xEF, 0xBB, 0xBF})
+
+		writer := csv.NewWriter(file)
+		writer.Comma = ';' // use semicolon as separator
+		defer writer.Flush()
+
+		// write header
+		header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
+		if err := writer.Write(header); err != nil {
+			statusLabel.SetText("Error writing header to CSV: " + err.Error())
+			return
+		}
+
+		// write session rows
+		for _, s := range sessions {
+			row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
+			if err := writer.Write(row); err != nil {
+				statusLabel.SetText("Error writing row to CSV: " + err.Error())
+				return
+			}
+		}
+		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), filename))
+	})
+
+	exportSortCSVBtn = widget.NewButton("Export to CSV", func() {
+
+		// validate and parse inputs
+		startT, err := parseExportTime(startExport.Text)
+		if err != nil {
+			statusLabel.SetText("Invalid start time. Use format: 2006-01-02 15:04")
+			return
+		}
+		endT, err := parseExportTime(endExport.Text)
+		if err != nil {
+			statusLabel.SetText("Invalid end time. Use format: 2006-01-02 15:04")
+			return
+		}
+		if endT.Before(startT) {
+			statusLabel.SetText("End time must be after start time")
+			return
+		}
+		// now you can use startT.Unix() / endT.Unix() to filter sessions
+
+		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".csv"
+		sessions := getAllSessions(db) // or a filtered query using unix timestamps
+		file, err := os.Create(filename)
+		sessionsExported := 0
+		if err != nil {
+			statusLabel.SetText("Error creating file: " + err.Error())
+			return
+		}
+
+		defer file.Close()
+
+		file.Write([]byte{0xEF, 0xBB, 0xBF})
+
+		writer := csv.NewWriter(file)
+		writer.Comma = ';' // use semicolon as separator
+		defer writer.Flush()
+
+		// write header
+		header := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate (€)", "Earnings (€)"}
+		if err := writer.Write(header); err != nil {
+			statusLabel.SetText("Error writing header to CSV: " + err.Error())
+			return
+		}
+
+		// write session rows
+		for _, s := range sessions {
+			if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
+				continue // skip sessions outside the range
+			}
+			row := []string{s.Title, s.Description, s.StartTime, s.EndTime, (time.Duration(s.Difference) * time.Second).String(), fmt.Sprintf("%.2f", s.HourlyRate), fmt.Sprintf("%.2f", s.Earnings)}
+			if err := writer.Write(row); err != nil {
+				statusLabel.SetText("Error writing row to CSV: " + err.Error())
+				return
+			}
+			sessionsExported++
+		}
+		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", sessionsExported, filename))
+	})
+
+	exportXLSXBtn = widget.NewButton("Export to XLSX", func() {
+		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".xlsx"
+		sessions := getAllSessions(db)
+
+		f := excelize.NewFile()
+		defer f.Close()
+
+		sheetName := "Sheet1"
+
+		// Währungsformat für Spalten F und G (Hourly Rate, Earnings)
+		styleEuro, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 226, // Currency format
+		})
+
+		styleTime, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 22, // DateTime format
+		})
+
+		styleDurtation, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 21, // Duration format
+		})
+
+		// Header schreiben (Zeile 1)
+		headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
+		for i, h := range headers {
+			cell := string(rune('A'+i)) + "1" // A1, B1, C1, ...
+			f.SetCellValue(sheetName, cell, h)
+		}
+
+		// Daten schreiben (ab Zeile 2)
+		for rowIdx, s := range sessions {
+			row := rowIdx + 2 // Excel rows start at 1, +1 for header
+			rowStr := strconv.Itoa(row)
+
+			f.SetCellValue(sheetName, "A"+rowStr, s.Title)
+			f.SetCellValue(sheetName, "B"+rowStr, s.Description)
+			f.SetCellValue(sheetName, "C"+rowStr, s.StartTime)
+			f.SetCellValue(sheetName, "D"+rowStr, s.EndTime)
+			f.SetCellValue(sheetName, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
+			f.SetCellValue(sheetName, "F"+rowStr, s.HourlyRate)
+			f.SetCellValue(sheetName, "G"+rowStr, s.Earnings)
+		}
+
+		// Währungsformat auf Spalten F und G anwenden
+		f.SetColStyle(sheetName, "C", styleTime)
+		f.SetColStyle(sheetName, "D", styleTime)
+		f.SetColStyle(sheetName, "E", styleDurtation)
+		f.SetColStyle(sheetName, "F", styleEuro)
+		f.SetColStyle(sheetName, "G", styleEuro)
+
+		// Datei speichern
+		if err := f.SaveAs(filename); err != nil {
+			statusLabel.SetText("Error saving XLSX: " + err.Error())
+			return
+		}
+
+		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", len(sessions), filename))
+	})
+
+	exportSortXLSXBtn = widget.NewButton("Export to XLSX", func() {
+
+		// validate and parse inputs
+		startT, err := parseExportTime(startExport.Text)
+		if err != nil {
+			statusLabel.SetText("Invalid start time. Use format: 2006-01-02 15:04")
+			return
+		}
+		endT, err := parseExportTime(endExport.Text)
+		if err != nil {
+			statusLabel.SetText("Invalid end time. Use format: 2006-01-02 15:04")
+			return
+		}
+		if endT.Before(startT) {
+			statusLabel.SetText("End time must be after start time")
+			return
+		}
+		// now you can use startT.Unix() / endT.Unix() to filter sessions
+
+		filename := "export_" + time.Now().Format("2006-01-02_15-04-05") + ".xlsx"
+		sessions := getAllSessions(db)
+		sessionsExported := 0
+
+		f := excelize.NewFile()
+		defer f.Close()
+
+		sheetName := "Sheet1"
+
+		// Währungsformat für Spalten F und G (Hourly Rate, Earnings)
+		styleEuro, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 226, // Currency format
+		})
+
+		styleTime, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 22, // DateTime format
+		})
+
+		styleDurtation, _ := f.NewStyle(&excelize.Style{
+			NumFmt: 21, // Duration format
+		})
+
+		// Header schreiben (Zeile 1)
+		headers := []string{"Title", "Description", "Start Time", "End Time", "Duration", "Hourly Rate", "Earnings"}
+		for i, h := range headers {
+			cell := string(rune('A'+i)) + "1" // A1, B1, C1, ...
+			f.SetCellValue(sheetName, cell, h)
+		}
+
+		// Daten schreiben (ab Zeile 2)
+		for rowIdx, s := range sessions {
+			if s.startUnix < startT.Unix() || s.endUnix > endT.Unix() {
+				continue // skip sessions outside the range
+			}
+			row := rowIdx + 2 // Excel rows start at 1, +1 for header
+			rowStr := strconv.Itoa(row)
+
+			f.SetCellValue(sheetName, "A"+rowStr, s.Title)
+			f.SetCellValue(sheetName, "B"+rowStr, s.Description)
+			f.SetCellValue(sheetName, "C"+rowStr, s.StartTime)
+			f.SetCellValue(sheetName, "D"+rowStr, s.EndTime)
+			f.SetCellValue(sheetName, "E"+rowStr, (time.Duration(s.Difference) * time.Second).String())
+			f.SetCellValue(sheetName, "F"+rowStr, s.HourlyRate)
+			f.SetCellValue(sheetName, "G"+rowStr, s.Earnings)
+
+			sessionsExported++
+		}
+
+		// Währungsformat auf Spalten F und G anwenden
+		f.SetColStyle(sheetName, "C", styleTime)
+		f.SetColStyle(sheetName, "D", styleTime)
+		f.SetColStyle(sheetName, "E", styleDurtation)
+		f.SetColStyle(sheetName, "F", styleEuro)
+		f.SetColStyle(sheetName, "G", styleEuro)
+
+		// Datei speichern
+		if err := f.SaveAs(filename); err != nil {
+			statusLabel.SetText("Error saving XLSX: " + err.Error())
+			return
+		}
+
+		statusLabel.SetText(fmt.Sprintf("Exported %d sessions to %s", sessionsExported, filename))
+	})
+
+	exportSortCSVBtn.Hide()
+	exportSortXLSXBtn.Hide()
+	startExport.Hide()
+	endExport.Hide()
+	cancelBtn.Hide()
+	exportXLSXBtn.Show()
+	exportCSVBtn.Show()
+	startExport.SetPlaceHolder("Format: 2006-01-02 15:04")
+	endExport.SetPlaceHolder("Format: 2006-01-02 15:04")
+
+	return container.NewVBox(
+		statusLabel,
+		exportCSVBtn,
+		exportXLSXBtn,
+		sortBtn,
+		startExport,
+		endExport,
+		exportSortCSVBtn,
+		exportSortXLSXBtn,
+		cancelBtn,
+	)
 }
