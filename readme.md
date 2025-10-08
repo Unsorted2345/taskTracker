@@ -26,8 +26,8 @@
 
 ###
 
-<h3 align="left">Improving</h3>
+<h3 align="left">Improving and bugreports</h3>
 
 ###
 
-<p align="left">Feel free to make a pull request so the programm can be improved</p>
+<p align="left">Feel free to make a pull request or open an issue so the programm can be improved</p>
